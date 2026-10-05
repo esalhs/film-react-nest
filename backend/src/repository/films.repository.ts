@@ -1,14 +1,22 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { Film, IFilm, ISchedule } from './film.schema';
+import { Injectable } from '@nestjs/common';
 import { GetFilmDto, GetScheduleDto } from '../films/dto/films.dto';
 import { ListResponseDto } from '../common/list-response.dto';
-import { Mongoose } from 'mongoose';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Film } from './film.entity';
+import { Schedule } from './schedule.entity';
+import { Repository } from 'typeorm';
+import { FilmsRepository } from './films.repository.interface';
 
 @Injectable()
-export class FilmRepository {
-  constructor(@Inject('CONNECTION') private readonly connection: Mongoose) {}
+export class FilmRepository implements FilmsRepository {
+  constructor(
+    @InjectRepository(Film)
+    private readonly filmRepository: Repository<Film>,
+    @InjectRepository(Schedule)
+    private readonly scheduleRepository: Repository<Schedule>,
+  ) {}
 
-  private getFilmMapperFn(): (film: IFilm) => GetFilmDto {
+  private getFilmMapperFn(): (film: Film) => GetFilmDto {
     return (film) => ({
       id: film.id,
       rating: film.rating,
@@ -22,7 +30,7 @@ export class FilmRepository {
     });
   }
 
-  private getScheduleMapperFn(): (schedule: ISchedule) => GetScheduleDto {
+  private getScheduleMapperFn(): (schedule: Schedule) => GetScheduleDto {
     return (schedule) => ({
       id: schedule.id,
       daytime: schedule.daytime,
@@ -35,7 +43,7 @@ export class FilmRepository {
   }
 
   async findAll(): Promise<ListResponseDto<GetFilmDto>> {
-    const films = await Film.find();
+    const films = await this.filmRepository.find();
     const items = films.map(this.getFilmMapperFn());
     return { total: items.length, items };
   }
@@ -43,7 +51,10 @@ export class FilmRepository {
   async findScheduleByFilmId(
     filmId: string,
   ): Promise<ListResponseDto<GetScheduleDto>> {
-    const film = await Film.findOne({ id: filmId });
+    const film = await this.filmRepository.findOne({
+      where: { id: filmId },
+      relations: { schedule: true },
+    });
 
     if (!film) {
       return { total: 0, items: [] };
@@ -56,15 +67,10 @@ export class FilmRepository {
   async findSession(
     filmId: string,
     sessionId: string,
-  ): Promise<ISchedule | null> {
-    const film = await Film.findOne({ id: filmId });
-
-    if (!film) {
-      return null;
-    }
-
-    const session = film.schedule.find((session) => session.id === sessionId);
-    return session ?? null;
+  ): Promise<Schedule | null> {
+    return this.scheduleRepository.findOne({
+      where: { id: sessionId, film: { id: filmId } },
+    });
   }
 
   async bookSeats(
@@ -72,17 +78,13 @@ export class FilmRepository {
     sessionId: string,
     seats: string[],
   ): Promise<void> {
-    const film = await Film.findOne({ id: filmId });
-    if (!film) {
-      return;
-    }
+    const session = await this.findSession(filmId, sessionId);
 
-    const session = film.schedule.find((session) => session.id === sessionId);
     if (!session) {
       return;
     }
 
     session.taken.push(...seats);
-    await film.save();
+    await this.scheduleRepository.save(session);
   }
 }
